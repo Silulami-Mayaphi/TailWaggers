@@ -7,10 +7,13 @@ const ThankYou = () => {
   const [booking, setBooking] = useState(null);
 
   useEffect(() => {
+    if (!bookingId) return;
+
     fetch(`https://tailwaggers-backend.onrender.com/api/bookings/${bookingId}`)
       .then((res) => res.json())
-      .then(setBooking);
-  }, []);
+      .then(setBooking)
+      .catch((err) => console.error("Failed to load booking", err));
+  }, [bookingId]);   // 👈 THIS is what fixes Vercel
 
   if (!booking) return <p>Loading...</p>;
 
