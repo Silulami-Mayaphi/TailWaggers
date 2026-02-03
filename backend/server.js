@@ -1,80 +1,50 @@
+console.log("SERVER FILE RUNNING:", import.meta.url);
 import express from "express";
-import axios from "axios";
-import crypto from "crypto";
+import cors from "cors";
+import fetch from "node-fetch";
 import dotenv from "dotenv";
+import mysql from "mysql2/promise";
 
 dotenv.config();
 
 const app = express();
+app.use(cors());
 app.use(express.json());
 
-// ----------------------------
-// Booking creation route
-// ----------------------------
-app.post("/api/bookings", async (req, res) => {
-  const { ownerName, email, phone, dogName, dogSize, date, address, services } = req.body;
+let db;
 
-  // Validate input
-  if (
-    !ownerName || !email || !phone || !dogName || !dogSize ||
-    !date || !address || !services || services.length === 0
-  ) {
-    return res.status(400).json({ error: "All fields required" });
-  }
+async function initDB() {
+  db = await mysql.createPool({
+    host: process.env.DB_HOST,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASS,
+    database: process.env.DB_NAME,
+  });
+}
 
-  // Pricing table
-  const servicePricing = {
-    "Full Groom": { small: 200, medium: 300, large: 400 },
-    "Bath & Brush": { small: 120, medium: 150, large: 200 },
-    "Nail Trim": { small: 50, medium: 70, large: 90 },
-    "Ear Cleaning": { small: 40, medium: 60, large: 80 },
-    "Teeth Cleaning": { small: 60, medium: 80, large: 100 },
-  };
+initDB()
+  .then(() => {
+    console.log("Database connected");
+    startServer();
+  })
+  .catch((err) => {
+    console.error("DB connection failed:", err);
+  });
 
-  // Calculate total amount
-  let amount = 0;
-  for (const service of services) {
-    const price = servicePricing[service]?.[dogSize.toLowerCase()];
-    if (!price) return res.status(400).json({ error: `Invalid service or dog size: ${service}` });
-    amount += price;
-  }
+function startServer() {
+  /* ================================
+     HEALTH CHECK
+  ================================= */
+  app.get("/", (req, res) => {
+    res.send("TailWaggers API running");
+  });
 
-  try {
-    // ----------------------------
-    // Save booking in DB
-    // ----------------------------
-    const [result] = await db.query(
-      "INSERT INTO bookings (owner_name, email, phone, dog_name, dog_size, date, address, services, amount, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [ownerName, email, phone, dogName, dogSize, date, address, JSON.stringify(services), amount, "pending_payment"]
-    );
-
-    const bookingId = result.insertId;
-
-    // ----------------------------
-    // Create Yoco payment (test/live) with bookingId in metadata
-    // ----------------------------
-    const checkoutResponse = await axios.post(
-      "https://online.yoco.com/v1/checkout",
-      {
-        amountInCents: amount * 100,
-        currency: "ZAR",
-        metadata: { bookingId },
-        redirectUrl: "https://tailwaggers-frontend.com/success",
-        cancelUrl: "https://tailwaggers-frontend.com/cancel"
-      },
-      {
-        headers: {
-          "Authorization": `Bearer ${process.env.YOCO_API_KEY}`,
-          "Content-Type": "application/json"
-        }
-      }
-    );
-
-    // Respond with booking + payment info
-    res.status(201).json({
-      message: "Booking created and payment initiated",
-      booking: {
-        id: bookingId,
+  /* ================================
+     CREATE BOOKING + Yoco Payment
+  ================================= */
+  app.post("/api/bookings", async (req, res) => {
+    try {
+      const {
         ownerName,
         email,
         phone,
@@ -83,65 +53,108 @@ app.post("/api/bookings", async (req, res) => {
         date,
         address,
         services,
-        amount,
-        status: "pending_payment",
-      },
-      payment: checkoutResponse.data // contains Yoco redirectUrl
-    });
-  } catch (err) {
-    console.error("Error creating booking/payment:", err.response?.data || err);
-    res.status(500).json({ error: "Database or payment creation error" });
-  }
-});
+      } = req.body;
 
-// ----------------------------
-// Yoco webhook route
-// ----------------------------
-app.post("/api/bookings/webhook", async (req, res) => {
-  const payload = JSON.stringify(req.body);
-  const signature = req.headers['x-yoco-signature'];
-  const secret = process.env.YOCO_WEBHOOK_SECRET;
+      if (!services || services.length === 0) {
+        return res.status(400).json({ error: "No services selected" });
+      }
 
-  // ----------------------------
-  // Verify webhook signature
-  // ----------------------------
-  const hash = crypto.createHmac('sha256', secret).update(payload).digest('hex');
-  if (hash !== signature) {
-    console.log("Invalid webhook signature");
-    return res.status(400).send("Invalid signature");
-  }
+      const prices = {
+        Bath: { small: 150, medium: 200, large: 250 },
+        "Nail Trim": { small: 50, medium: 70, large: 100 },
+        Haircut: { small: 200, medium: 250, large: 300 },
+        "Ear Cleaning": { small: 80, medium: 100, large: 120 },
+        Teeth: { small: 100, medium: 120, large: 150 },
+      };
 
-  const event = req.body;
-  const bookingId = event.data.metadata?.bookingId;
+      let total = 0;
+      services.forEach((s) => {
+        total += prices[s][dogSize];
+      });
 
-  if (!bookingId) {
-    console.log("Webhook missing bookingId:", event);
-    return res.status(400).send("Missing bookingId");
-  }
+      const [result] = await db.execute(
+        `INSERT INTO bookings 
+        (ownerName, email, phone, dogName, dogSize, date, address, services, amount, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          ownerName,
+          email,
+          phone,
+          dogName,
+          dogSize,
+          date,
+          address,
+          JSON.stringify(services),
+          total,
+          "pending",
+        ]
+      );
 
-  try {
-    // ----------------------------
-    // Update booking status
-    // ----------------------------
-    if (event.type === "payment.authorized") {
-      await db.query("UPDATE bookings SET status = ? WHERE id = ?", ["paid", bookingId]);
-      console.log("Booking marked as paid:", bookingId);
-    } else if (event.type === "payment.failed") {
-      await db.query("UPDATE bookings SET status = ? WHERE id = ?", ["payment_failed", bookingId]);
-      console.log("Booking marked as payment_failed:", bookingId);
-    } else {
-      console.log("Unhandled Yoco event type:", event.type);
+      const bookingId = result.insertId;
+
+      const yocoRes = await fetch("https://payments.yoco.com/api/checkouts", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.YOCO_SECRET_KEY}`,
+        },
+        body: JSON.stringify({
+          amount: total * 100,
+          currency: "ZAR",
+          successUrl: `https://tailwaggers-frontend.onrender.com/thank-you?bookingId=${bookingId}`,
+          cancelUrl: `https://tailwaggers-frontend.onrender.com/`,
+          metadata: { bookingId },
+        }),
+      });
+
+      const yocoData = await yocoRes.json();
+
+      if (!yocoData.redirectUrl) {
+        return res.status(500).json({ error: "Yoco failed", yocoData });
+      }
+
+      res.json({
+        bookingId,
+        payment: {
+          redirectUrl: yocoData.redirectUrl,
+        },
+      });
+    } catch (err) {
+      console.error("BOOKING ERROR:", err);
+      res.status(500).json({ error: "Server error" });
     }
-  } catch (err) {
-    console.error("DB update error:", err);
-  }
+  });
 
-  // Always return 200 OK
-  res.status(200).send("Received");
+  /* ================================
+     FETCH SINGLE BOOKING
+  ================================= */
+  app.get("/api/bookings/:id", async (req, res) => {
+    try {
+      const [rows] = await db.execute(
+        "SELECT * FROM bookings WHERE id = ?",
+        [req.params.id]
+      );
+
+      if (rows.length === 0) {
+        return res.status(404).json({ error: "Booking not found" });
+      }
+
+      const booking = rows[0];
+      booking.services = JSON.parse(booking.services);
+
+      res.json(booking);
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: "Failed to fetch booking" });
+    }
+  });
+
+  /* ================================
+     START SERVER
+  ================================= */
+  const PORT = 5001;
+app.listen(PORT, () => {
+  console.log("Listening on", PORT);
 });
 
-// ----------------------------
-// Start server
-// ----------------------------
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+}

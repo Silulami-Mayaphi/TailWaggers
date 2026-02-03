@@ -1,6 +1,6 @@
-import React, { useState } from "react";
+import { useState } from "react";
 
-const BookingForm = () => {
+const BookingForm = ({ selectedPackage }) => {
   const [formData, setFormData] = useState({
     ownerName: "",
     email: "",
@@ -9,59 +9,58 @@ const BookingForm = () => {
     dogSize: "small",
     date: "",
     address: "",
-    services: [],
+    addons: [],
   });
 
-  const [totalAmount, setTotalAmount] = useState(0);
-
-  const dogSizes = ["small", "medium", "large"];
-  const groomingServices = {
-    Bath: { small: 150, medium: 200, large: 250 },
-    "Nail Trim": { small: 50, medium: 70, large: 100 },
-    Haircut: { small: 200, medium: 250, large: 300 },
-    "Ear Cleaning": { small: 80, medium: 100, large: 120 },
-    Teeth: { small: 100, medium: 120, large: 150 },
+  const sizeMultiplier = {
+    small: 1,
+    medium: 1.3,
+    large: 1.6,
+    xl: 2,
   };
+
+  const addons = {
+    "Nail Trim": 60,
+    "De-shedding": 120,
+    "Flea & Tick": 150,
+    "Teeth Cleaning": 100,
+    "Ear Cleaning": 80,
+  };
+
+  const basePrice = Math.round(
+    selectedPackage.basePrice * sizeMultiplier[formData.dogSize]
+  );
+
+  const addonsTotal = formData.addons.reduce(
+    (sum, a) => sum + addons[a],
+    0
+  );
+
+  const totalAmount = basePrice + addonsTotal;
 
   const handleChange = (e) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
   };
 
-  const handleServiceToggle = (service) => {
-    let updatedServices = [...formData.services];
-    if (updatedServices.includes(service)) {
-      updatedServices = updatedServices.filter((s) => s !== service);
-    } else {
-      updatedServices.push(service);
-    }
-
-    setFormData({ ...formData, services: updatedServices });
-
-    let newTotal = 0;
-    updatedServices.forEach(
-      (s) => (newTotal += groomingServices[s][formData.dogSize])
-    );
-    setTotalAmount(newTotal);
-  };
-
-  const handleSizeChange = (e) => {
-    const newSize = e.target.value;
-    setFormData({ ...formData, dogSize: newSize });
-
-    let newTotal = 0;
-    formData.services.forEach(
-      (s) => (newTotal += groomingServices[s][newSize])
-    );
-    setTotalAmount(newTotal);
+  const toggleAddon = (addon) => {
+    setFormData((prev) => ({
+      ...prev,
+      addons: prev.addons.includes(addon)
+        ? prev.addons.filter((a) => a !== addon)
+        : [...prev.addons, addon],
+    }));
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    if (formData.services.length === 0) {
-      alert("Please select at least one grooming service.");
-      return;
-    }
+    const payload = {
+      ...formData,
+      package: selectedPackage.name,
+      basePrice,
+      addons: formData.addons,
+      total: totalAmount,
+    };
 
     try {
       const res = await fetch(
@@ -69,7 +68,7 @@ const BookingForm = () => {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(formData),
+          body: JSON.stringify(payload),
         }
       );
 
@@ -80,10 +79,8 @@ const BookingForm = () => {
         return;
       }
 
-      // Redirect to Yoco payment page
-      const paymentUrl = data.payment?.redirectUrl;
-      if (paymentUrl) {
-        window.location.href = paymentUrl;
+      if (data.payment?.redirectUrl) {
+        window.location.href = data.payment.redirectUrl;
       } else {
         alert("Payment link not received.");
       }
@@ -94,46 +91,46 @@ const BookingForm = () => {
   };
 
   return (
-    <section className="max-w-xl mx-auto bg-white p-8 rounded-xl shadow-lg space-y-6">
-      <h2 className="text-2xl font-bold mb-4 text-center">
-        Book a Grooming Service
+    <section className="space-y-4">
+      <h2 className="text-2xl font-bold text-center">
+        {selectedPackage.name}
       </h2>
 
+      <p className="text-center text-gray-500">
+        Includes: {selectedPackage.included.join(", ")}
+      </p>
+
+      <div className="bg-gray-100 p-4 rounded-xl text-center font-bold">
+        Base Price: R{basePrice}
+      </div>
+
       <input
-        type="text"
         name="ownerName"
         placeholder="Your Name"
-        value={formData.ownerName}
         onChange={handleChange}
         className="w-full border p-3 rounded"
         required
       />
 
       <input
-        type="email"
         name="email"
         placeholder="Email"
-        value={formData.email}
         onChange={handleChange}
         className="w-full border p-3 rounded"
         required
       />
 
       <input
-        type="tel"
         name="phone"
-        placeholder="Phone Number"
-        value={formData.phone}
+        placeholder="Phone"
         onChange={handleChange}
         className="w-full border p-3 rounded"
         required
       />
 
       <input
-        type="text"
         name="dogName"
         placeholder="Dog's Name"
-        value={formData.dogName}
         onChange={handleChange}
         className="w-full border p-3 rounded"
         required
@@ -141,56 +138,53 @@ const BookingForm = () => {
 
       <select
         name="dogSize"
-        value={formData.dogSize}
-        onChange={handleSizeChange}
+        onChange={handleChange}
         className="w-full border p-3 rounded"
       >
-        {dogSizes.map((size) => (
-          <option key={size} value={size}>
-            {size.charAt(0).toUpperCase() + size.slice(1)}
-          </option>
-        ))}
+        <option value="small">Small</option>
+        <option value="medium">Medium</option>
+        <option value="large">Large</option>
+        <option value="xl">XL</option>
       </select>
 
       <input
         type="date"
         name="date"
-        value={formData.date}
         onChange={handleChange}
         className="w-full border p-3 rounded"
         required
       />
 
       <input
-        type="text"
         name="address"
-        placeholder="Address / Pickup Info"
-        value={formData.address}
+        placeholder="Pickup Address"
         onChange={handleChange}
         className="w-full border p-3 rounded"
         required
       />
 
-      <h3 className="font-bold">Select Services</h3>
+      <h3 className="font-bold">Optional Add-Ons</h3>
+
       <div className="grid grid-cols-2 gap-2">
-        {Object.keys(groomingServices).map((s) => (
-          <label key={s} className="border p-2 rounded cursor-pointer">
+        {Object.keys(addons).map((a) => (
+          <label key={a} className="border p-2 rounded cursor-pointer">
             <input
               type="checkbox"
-              checked={formData.services.includes(s)}
-              onChange={() => handleServiceToggle(s)}
+              checked={formData.addons.includes(a)}
+              onChange={() => toggleAddon(a)}
             />{" "}
-            {s} - R{groomingServices[s][formData.dogSize]}
+            {a} – R{addons[a]}
           </label>
         ))}
       </div>
 
-      <p className="text-xl font-bold">Total: R {totalAmount}</p>
+      <p className="text-xl font-bold text-center mt-4">
+        Total: R{totalAmount}
+      </p>
 
       <button
-        type="submit"
         onClick={handleSubmit}
-        className="w-full bg-cyan-500 text-white p-3 rounded"
+        className="w-full bg-cyan-600 hover:bg-cyan-700 text-white py-4 rounded-xl font-bold"
       >
         Book & Pay
       </button>
