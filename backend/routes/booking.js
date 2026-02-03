@@ -1,4 +1,12 @@
-app.post("/api/bookings", async (req, res) => {
+import express from "express";
+import fetch from "node-fetch";
+import axios from "axios";
+import { getDB } from "../server.js"; // Access db pool
+
+const router = express.Router();
+
+router.post("/bookings", async (req, res) => {
+  const db = getDB();
   const { ownerName, email, phone, dogName, dogSize, date, address, services } = req.body;
 
   if (!ownerName || !email || !phone || !dogName || !dogSize || !date || !address || !services || services.length === 0) {
@@ -21,7 +29,6 @@ app.post("/api/bookings", async (req, res) => {
   }
 
   try {
-    // Save booking first
     const [result] = await db.query(
       `INSERT INTO bookings 
       (owner_name, email, phone, dog_name, dog_size, date, address, services, amount, status) 
@@ -31,17 +38,14 @@ app.post("/api/bookings", async (req, res) => {
 
     const bookingId = result.insertId;
 
-    // Create Yoco checkout
     const yocoRes = await axios.post(
       "https://payments.yoco.com/api/checkouts",
       {
-        amount: amount * 100, // cents
+        amount: amount * 100,
         currency: "ZAR",
         successUrl: `${process.env.APP_URL}/payment-success?booking=${bookingId}`,
         cancelUrl: `${process.env.APP_URL}/payment-cancelled`,
-        metadata: {
-          bookingId,
-        },
+        metadata: { bookingId },
       },
       {
         headers: {
@@ -51,12 +55,12 @@ app.post("/api/bookings", async (req, res) => {
       }
     );
 
-    res.json({
-      checkoutUrl: yocoRes.data.redirectUrl,
-    });
+    res.json({ checkoutUrl: yocoRes.data.redirectUrl });
 
   } catch (err) {
     console.error("Booking/Yoco Error:", err.response?.data || err);
     res.status(500).json({ error: "Payment initialization failed" });
   }
 });
+
+export default router;
